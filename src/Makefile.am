@@ -1,9 +1,9 @@
 bin_PROGRAMS = qwertickle
 
-AM_CFLAGS = $(GUI_CFLAGS) \
-	    -Wall -O2 \
+AM_CFLAGS = $(QWERTICKLE_CFLAGS) \
+	    -Wall -Wextra -O2 \
 	    -DDATADIR=\"$(datadir)/$(PACKAGE)\"
 
-qwertickle_LDADD = $(GUI_LIBS)
+qwertickle_LDADD = $(QWERTICKLE_LIBS)
 
 qwertickle_SOURCES = qwertickle.c qwertickle.h
