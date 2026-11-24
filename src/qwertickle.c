@@ -34,11 +34,12 @@ enum {
     SOUND_BACKSPACE
 };
 
-static const gchar *sound_files[] = {
-    DATADIR "/typewriter-key.mp3",
-    DATADIR "/typewriter-return.mp3",
-    DATADIR "/typewriter-space-bar.mp3",
-    DATADIR "/typewriter-backspace.mp3"
+/* Keep filenames separate from their location so development builds work too. */
+static const gchar *sound_names[] = {
+    "typewriter-key.mp3",
+    "typewriter-return.mp3",
+    "typewriter-space-bar.mp3",
+    "typewriter-backspace.mp3"
 };
 
 static AppIndicator *indicator;
@@ -50,6 +51,28 @@ static gint stop_requested = 0;
 static gboolean play_sound(gpointer data);
 static void start_listener(void);
 static void stop_listener(void);
+
+static gchar *find_sound_file(const gchar *name)
+{
+    gchar *path;
+    const gchar *directories[] = {
+        DATADIR,
+        "data",
+        "../data",
+        NULL
+    };
+
+    for (guint i = 0; directories[i] != NULL; i++) {
+        path = g_build_filename(directories[i], name, NULL);
+        if (g_file_test(path, G_FILE_TEST_IS_REGULAR))
+            return path;
+        g_free(path);
+    }
+
+    g_warning("Sound file '%s' was not found (checked install and local data directories).",
+              name);
+    return NULL;
+}
 
 static void show_error(const gchar *title, const gchar *message)
 {
@@ -78,6 +101,14 @@ static gboolean on_gst_message(GstBus *bus, GstMessage *message, gpointer data)
     switch (GST_MESSAGE_TYPE(message)) {
     case GST_MESSAGE_EOS:
     case GST_MESSAGE_ERROR:
+        if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+            GError *error = NULL;
+            gchar *debug = NULL;
+            gst_message_parse_error(message, &error, &debug);
+            g_warning("Audio playback failed: %s", error->message);
+            g_clear_error(&error);
+            g_free(debug);
+        }
         gst_element_set_state(player, GST_STATE_NULL);
         gst_object_unref(player);
         return G_SOURCE_REMOVE;
@@ -89,15 +120,21 @@ static gboolean on_gst_message(GstBus *bus, GstMessage *message, gpointer data)
 static gboolean play_sound(gpointer data)
 {
     const guint sound_index = GPOINTER_TO_UINT(data);
+    gchar *filename;
     gchar *uri;
     GError *error = NULL;
     GstElement *player;
     GstBus *bus;
 
-    if (sound_index >= G_N_ELEMENTS(sound_files))
+    if (sound_index >= G_N_ELEMENTS(sound_names))
         return G_SOURCE_REMOVE;
 
-    uri = gst_filename_to_uri(sound_files[sound_index], &error);
+    filename = find_sound_file(sound_names[sound_index]);
+    if (filename == NULL)
+        return G_SOURCE_REMOVE;
+
+    uri = gst_filename_to_uri(filename, &error);
+    g_free(filename);
     if (uri == NULL) {
         g_warning("Cannot create sound URI: %s",
                   error ? error->message : "unknown error");
@@ -121,6 +158,7 @@ static gboolean play_sound(gpointer data)
 
     if (gst_element_set_state(player, GST_STATE_PLAYING) ==
         GST_STATE_CHANGE_FAILURE) {
+        g_warning("Could not start audio playback");
         gst_element_set_state(player, GST_STATE_NULL);
         gst_object_unref(player);
     }
