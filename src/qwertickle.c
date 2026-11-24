@@ -176,7 +176,6 @@ static guint sound_for_key(unsigned int code)
     switch (code) {
     case KEY_ENTER:
     case KEY_KPENTER:
-    case KEY_SPACE:
     case KEY_BACKSPACE:
         return SOUND_SPECIAL;
     default:
