@@ -307,9 +307,77 @@ static void on_quit(GtkMenuItem *item, gpointer data)
     gtk_main_quit();
 }
 
+static gboolean is_full_keyboard(const gchar *path)
+{
+    unsigned long key_bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 1] = {0};
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    gboolean valid = FALSE;
+
+    if (fd < 0)
+        return FALSE;
+
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) >= 0 &&
+        (key_bits[KEY_A / (8 * sizeof(unsigned long))] &
+         (1UL << (KEY_A % (8 * sizeof(unsigned long))))) &&
+        (key_bits[KEY_SPACE / (8 * sizeof(unsigned long))] &
+         (1UL << (KEY_SPACE % (8 * sizeof(unsigned long))))) &&
+        (key_bits[KEY_ENTER / (8 * sizeof(unsigned long))] &
+         (1UL << (KEY_ENTER % (8 * sizeof(unsigned long))))))
+        valid = TRUE;
+
+    close(fd);
+    return valid;
+}
+
+static gchar *find_keyboard_device(void)
+{
+    GDir *directory = g_dir_open("/dev/input", 0, NULL);
+    const gchar *name;
+    gchar *found = NULL;
+
+    if (directory == NULL)
+        return NULL;
+
+    while ((name = g_dir_read_name(directory)) != NULL) {
+        gchar *path;
+
+        if (!g_str_has_prefix(name, "event"))
+            continue;
+
+        path = g_build_filename("/dev/input", name, NULL);
+        if (is_full_keyboard(path)) {
+            found = path;
+            break;
+        }
+        g_free(path);
+    }
+
+    g_dir_close(directory);
+    return found;
+}
+
 static gboolean prompt_for_device(gpointer data)
 {
-    on_choose_device(NULL, NULL);
+    gchar *detected = find_keyboard_device();
+    (void)data;
+
+    if (detected != NULL) {
+        g_free(device_path);
+        device_path = detected;
+        g_message("Automatically selected keyboard: %s", device_path);
+        start_listener();
+    } else {
+        GtkWidget *dialog = gtk_message_dialog_new(
+            NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+            "No keyboard could be detected automatically.");
+        gtk_message_dialog_format_secondary_text(
+            GTK_MESSAGE_DIALOG(dialog),
+            "You can select your keyboard manually from the Qwertickle menu.");
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+        on_choose_device(NULL, NULL);
+    }
+
     return G_SOURCE_REMOVE;
 }
 
