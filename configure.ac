@@ -1,53 +1,27 @@
-#                                               -*- Autoconf -*-
-# Process this file with autoconf to produce a configure script.
-
-AC_PREREQ([2.65])
-AC_INIT([Qwertickle], [0.1.4], [aitjcize@gmail.com], [qwertickle], [http://github.com/Aitjcize/Qwertickle])
-AM_INIT_AUTOMAKE([foreign -Wall -Werror])
+# -*- Autoconf -*-
+AC_PREREQ([2.69])
+AC_INIT([Qwertickle], [0.2.0], [aitjcize@gmail.com], [qwertickle])
+AM_INIT_AUTOMAKE([foreign -Wall])
 AC_CONFIG_SRCDIR([src/qwertickle.c])
 AC_CONFIG_HEADERS([config.h])
 
-# Checks for programs.
 AC_PROG_CC
+AC_PROG_INSTALL
 
-# Checks for libraries.
-AM_PATH_GLIB_2_0([2.16.0], [
-	 GUI_CFLAGS="$GUI_CFLAGS $GLIB_CFLAGS"
-	 GUI_LIBS="$GUI_LIBS $GLIB_LIBS"
-	], [AC_MSG_ERROR([You need Glib >= 2.16.0 to build $PACKAGE])]) 
+PKG_PROG_PKG_CONFIG
+PKG_CHECK_MODULES([QWERTICKLE], [
+  gtk+-3.0
+  ayatana-appindicator3-0.1
+  gstreamer-1.0
+])
 
-AM_PATH_GTK_2_0([2.16.0], [
-	 GUI_CFLAGS="$GUI_CFLAGS $GTK_CFLAGS"
-	 GUI_LIBS="$GUI_LIBS $GTK_LIBS"
-	], [AC_MSG_ERROR([You need Gtk+ >= 2.16.0 to build $PACKAGE])]) 
+AC_SUBST([QWERTICKLE_CFLAGS])
+AC_SUBST([QWERTICKLE_LIBS])
 
-PKG_CHECK_MODULES(GST, [gstreamer-0.10],,
-	[AC_MSG_ERROR([You need libgstreamer0.10 to build $PACKAGE])]) 
-GUI_CFLAGS="$GUI_CFLAGS $GST_CFLAGS"
-GUI_LIBS="$GUI_LIBS $GST_LIBS"
-
-PKG_CHECK_MODULES(XTST, [xtst],,
-	[AC_MSG_ERROR([You need libXTst to build $PACKAGE])]) 
-GUI_CFLAGS="$GUI_CFLAGS $XTST_CFLAGS"
-GUI_LIBS="$GUI_LIBS $XTST_LIBS"
-
-PKG_CHECK_MODULES(X11, [x11],,
-	[AC_MSG_ERROR([You need libXTst to build $PACKAGE])]) 
-GUI_CFLAGS="$GUI_CFLAGS $X11_CFLAGS"
-GUI_LIBS="$GUI_LIBS $X11_LIBS"
-
-AC_SUBST(GUI_LIBS)
-AC_SUBST(GUI_CFLAGS)
-
-# Checks for header files.
-AC_PATH_X
-
-# Checks for typedefs, structures, and compiler characteristics.
-
-# Checks for library functions.
-AC_CONFIG_FILES([Makefile
-		 src/Makefile
-		 data/Makefile
-		 data/$PACKAGE.desktop
-		 ])
+AC_CONFIG_FILES([
+  Makefile
+  src/Makefile
+  data/Makefile
+  data/$PACKAGE.desktop
+])
 AC_OUTPUT
