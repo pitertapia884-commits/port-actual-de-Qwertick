@@ -124,6 +124,7 @@ static gboolean play_sound(gpointer data)
     gchar *uri;
     GError *error = NULL;
     GstElement *player;
+    GstElement *audio_sink;
     GstBus *bus;
 
     if (sound_index >= G_N_ELEMENTS(sound_names))
@@ -143,12 +144,20 @@ static gboolean play_sound(gpointer data)
     }
 
     player = gst_element_factory_make("playbin", NULL);
-    if (player == NULL) {
-        g_warning("GStreamer playbin plugin is unavailable");
+    audio_sink = gst_element_factory_make("autoaudiosink", "audio-sink");
+    if (player == NULL || audio_sink == NULL) {
+        g_warning("GStreamer playbin or autoaudiosink plugin is unavailable");
+        if (player != NULL)
+            gst_object_unref(player);
+        if (audio_sink != NULL)
+            gst_object_unref(audio_sink);
         g_free(uri);
         return G_SOURCE_REMOVE;
     }
 
+    /* Match the original Qwertickle playback setup. */
+    g_object_set(player, "audio-sink", audio_sink, NULL);
+    gst_element_set_state(player, GST_STATE_READY);
     g_object_set(player, "uri", uri, NULL);
     g_free(uri);
 
