@@ -147,7 +147,8 @@ static gpointer input_worker(gpointer unused)
 {
     struct input_event event;
     struct pollfd descriptor;
-    gchar name[256] = "unknown keyboard";
+    gchar name[256] = "unknown input device";
+    unsigned long key_bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 1] = {0};
     int fd;
     ssize_t bytes;
     (void)unused;
@@ -165,6 +166,24 @@ static gpointer input_worker(gpointer unused)
 
     if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0)
         g_strlcpy(name, device_path, sizeof(name));
+
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) < 0 ||
+        !(key_bits[KEY_A / (8 * sizeof(unsigned long))] &
+          (1UL << (KEY_A % (8 * sizeof(unsigned long))))) ||
+        !(key_bits[KEY_SPACE / (8 * sizeof(unsigned long))] &
+          (1UL << (KEY_SPACE % (8 * sizeof(unsigned long))))) ||
+        !(key_bits[KEY_ENTER / (8 * sizeof(unsigned long))] &
+          (1UL << (KEY_ENTER % (8 * sizeof(unsigned long)))))) {
+        gchar *message = g_strdup_printf(
+            "%s does not appear to be a full keyboard. Select the event "
+            "device that provides your normal typing keys.", device_path);
+        close(fd);
+        g_main_context_invoke(NULL, show_error_idle, message);
+        while (!g_atomic_int_get(&stop_requested))
+            g_usleep(100000);
+        return NULL;
+    }
+
     g_message("Listening to keyboard: %s", name);
 
     descriptor.fd = fd;
