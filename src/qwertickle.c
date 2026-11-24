@@ -29,17 +29,13 @@
 
 enum {
     SOUND_KEY = 0,
-    SOUND_RETURN,
-    SOUND_SPACE,
-    SOUND_BACKSPACE
+    SOUND_SPECIAL
 };
 
-/* Keep filenames separate from their location so development builds work too. */
+/* Original audio samples extracted unchanged from the Windows executable. */
 static const gchar *sound_names[] = {
-    "typewriter-key.mp3",
-    "typewriter-return.mp3",
-    "typewriter-space-bar.mp3",
-    "typewriter-backspace.mp3"
+    "embedded-audio-1-ulaw-44100.wav",
+    "embedded-audio-2-pcm-22050.wav"
 };
 
 static AppIndicator *indicator;
@@ -180,11 +176,9 @@ static guint sound_for_key(unsigned int code)
     switch (code) {
     case KEY_ENTER:
     case KEY_KPENTER:
-        return SOUND_RETURN;
     case KEY_SPACE:
-        return SOUND_SPACE;
     case KEY_BACKSPACE:
-        return SOUND_BACKSPACE;
+        return SOUND_SPECIAL;
     default:
         return SOUND_KEY;
     }
