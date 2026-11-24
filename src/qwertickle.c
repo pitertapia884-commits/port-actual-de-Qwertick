@@ -3,6 +3,10 @@
  * Original project by Wei-Ning Huang (AZ), GPL-2.0-or-later.
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
@@ -56,6 +60,14 @@ static void show_error(const gchar *title, const gchar *message)
         GTK_MESSAGE_DIALOG(dialog), "%s", message);
     gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
+}
+
+static gboolean show_error_idle(gpointer data)
+{
+    gchar *message = data;
+    show_error("Keyboard device unavailable", message);
+    g_free(message);
+    return G_SOURCE_REMOVE;
 }
 
 static gboolean on_gst_message(GstBus *bus, GstMessage *message, gpointer data)
@@ -145,7 +157,9 @@ static gpointer input_worker(gpointer unused)
         gchar *message = g_strdup_printf(
             "Could not open %s: %s\n\nCheck that your user has permission "
             "to read this keyboard device.", device_path, g_strerror(errno));
-        g_main_context_invoke(NULL, (GSourceFunc)show_error, message);
+        g_main_context_invoke(NULL, show_error_idle, message);
+        while (!g_atomic_int_get(&stop_requested))
+            g_usleep(100000);
         return NULL;
     }
 
