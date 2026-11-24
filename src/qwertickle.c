@@ -1,232 +1,472 @@
-/**
- * @file   qwertickle.c
- * @brief  
- * @author Wei-Ning Huang (AZ) <aitjcize@gmail.com>
- *
- * Copyright (C) 2010 -  Wei-Ning Huang (AZ) <aitjcize@gmail.com>
- * All Rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+/*
+ * Qwertickle - typewriter sounds for keyboard input.
+ * Original project by Wei-Ning Huang (AZ), GPL-2.0-or-later.
  */
 
-#include <pthread.h>
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/input.h>
+#include <poll.h>
 #include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
 
 #include <glib.h>
 #include <gst/gst.h>
 #include <gtk/gtk.h>
-#include <X11/Xlib.h>
-#include <X11/extensions/record.h>
+#include <libayatana-appindicator/app-indicator.h>
 
 #include "qwertickle.h"
 
-const gchar* uris[] = {
-  "file://"DATADIR"/typewriter-key.mp3",
-  "file://"DATADIR"/typewriter-return.mp3",
-  "file://"DATADIR"/typewriter-space-bar.mp3",
-  "file://"DATADIR"/typewriter-backspace.mp3"
+#ifndef DATADIR
+#define DATADIR "/usr/share/qwertickle"
+#endif
+
+enum {
+    SOUND_KEY = 0,
+    SOUND_SPECIAL
 };
 
-/* global variables */
-static gint uri = 0;
-static gint count = 0;
-static gboolean stop_thread = FALSE;
-static Display* dpy = 0;
-static XRecordContext rc;
-static pthread_t thread;
+/* Original audio samples extracted unchanged from the Windows executable. */
+static const gchar *sound_names[] = {
+    "embedded-audio-1-ulaw-44100.wav",
+    "embedded-audio-2-pcm-22050.wav"
+};
 
-int main(int argc, char *argv[])
+static AppIndicator *indicator;
+static GtkWidget *enable_item;
+static GThread *input_thread;
+static gchar *device_path;
+static gint stop_requested = 0;
+
+static gboolean play_sound(gpointer data);
+static void start_listener(void);
+static void stop_listener(void);
+
+static gchar *find_sound_file(const gchar *name)
 {
-  QwertickleGUI* gui = g_new0(QwertickleGUI, 1);
+    gchar *path;
+    const gchar *directories[] = {
+        DATADIR,
+        "data",
+        "../data",
+        NULL
+    };
 
-  gst_init(NULL, NULL);
-  gtk_init(&argc, &argv);
-
-  gui->statusicon = gtk_status_icon_new_from_file(DATADIR"/qwertickle.png");
-  gtk_status_icon_set_visible(gui->statusicon, TRUE);
-  gui->mainmenu = GTK_MENU(gtk_menu_new());
-  gui->play = GTK_MENU_ITEM(gtk_menu_item_new());
-  gui->sep = GTK_SEPARATOR_MENU_ITEM(gtk_separator_menu_item_new());
-  gui->quit =
-    GTK_IMAGE_MENU_ITEM(gtk_image_menu_item_new_from_stock("gtk-quit", NULL));
-  gui->about =
-    GTK_IMAGE_MENU_ITEM(gtk_image_menu_item_new_from_stock("gtk-about", NULL));
-  gui->enable =
-    GTK_CHECK_MENU_ITEM(gtk_check_menu_item_new_with_label("Enable"));
-
-  gtk_menu_shell_append(GTK_MENU_SHELL(gui->mainmenu), GTK_WIDGET(gui->enable));
-  gtk_menu_shell_append(GTK_MENU_SHELL(gui->mainmenu), GTK_WIDGET(gui->about));
-  gtk_menu_shell_append(GTK_MENU_SHELL(gui->mainmenu), GTK_WIDGET(gui->sep));
-  gtk_menu_shell_append(GTK_MENU_SHELL(gui->mainmenu), GTK_WIDGET(gui->quit));
-
-  /* initialize widgets */
-  gtk_check_menu_item_set_active(gui->enable, TRUE);
-
-  /* connect signals */
-  g_signal_connect(gui->statusicon, "popup-menu", G_CALLBACK(on_menu_pop), gui);
-  g_signal_connect(gui->enable, "toggled", G_CALLBACK(on_enable_toggled), gui);
-  g_signal_connect(gui->quit, "activate", G_CALLBACK(on_quit_activate), gui);
-  g_signal_connect(gui->about, "activate", G_CALLBACK(on_about_activate), gui);
-  g_signal_connect(gui->play, "activate", G_CALLBACK(on_play_activate), NULL);
-
-  gtk_widget_show_all(GTK_WIDGET(gui->mainmenu));
-
-  /* Fix freezing bug? close stdout and stdin so Xorg won't have to process
-   * the input to stdout when program exit*/
-  close(0);
-  close(1);
-
-  pthread_create(&thread, NULL, intercept_key_thread, gui->play);
-  gtk_main();
-
-  return 0;
-}
-
-void on_menu_pop(GtkStatusIcon* widget, guint b, guint time, gpointer data) {
-  QwertickleGUI* gui = (QwertickleGUI*)data;
-  gtk_menu_popup(gui->mainmenu, NULL, NULL, NULL, NULL, b, time);
-}
-
-void on_quit_activate(GtkImageMenuItem* widget, gpointer data) {
-  stop_intercept_key_thread();
-  gtk_main_quit();
-}
-
-void on_about_activate(GtkImageMenuItem* widget, gpointer data) {
-  GError* err = NULL;
-  GdkPixbuf* icon = gdk_pixbuf_new_from_file_at_size
-    (DATADIR"/qwertickle.png", 100, 100, &err);
-  const gchar* authors[] = { "Wei-Ning Huang\n<aitjcize@gmail.com>\n", NULL};
-
-  GtkAboutDialog* dialog = GTK_ABOUT_DIALOG(gtk_about_dialog_new());
-  gtk_window_set_icon_from_file(
-      GTK_WINDOW(dialog), DATADIR"/qwertickle.png", &err);
-  gtk_about_dialog_set_authors(dialog, authors);
-  gtk_about_dialog_set_program_name(dialog, PACKAGE_NAME);
-  gtk_about_dialog_set_version(dialog, PACKAGE_VERSION);
-  gtk_about_dialog_set_website(dialog, PACKAGE_URL);
-  gtk_about_dialog_set_copyright(dialog, PACKAGE_COPYRIGHT);
-  gtk_about_dialog_set_license(dialog, PACKAGE_LICENSE);
-  gtk_about_dialog_set_logo(dialog, icon);
-  gtk_about_dialog_set_comments(dialog, PACKAGE_COMMENTS);
-  gtk_dialog_run(GTK_DIALOG(dialog));
-  gtk_widget_destroy(GTK_WIDGET(dialog));
-}
-
-void on_enable_toggled(GtkCheckMenuItem* enable, gpointer data) {
-  QwertickleGUI* gui = (QwertickleGUI*)data;
-  if (gtk_check_menu_item_get_active(enable)) {
-    stop_thread = FALSE;
-    pthread_create(&thread, NULL, intercept_key_thread, gui->play);
-  } else
-    stop_intercept_key_thread();
-}
-
-void on_play_activate(GtkWidget* widget, GdkEventKey* event, gpointer data) {
-  if (count >= 30) return;
-  GstElement* pipeline = NULL;
-  GstElement* audio_sink = NULL;
-  GstBus* bus = NULL;
-
-  pipeline = gst_element_factory_make("playbin", "playbin");
-  audio_sink = gst_element_factory_make("autoaudiosink", "audio-sink");	
-  g_object_set(G_OBJECT(pipeline), "audio-sink", audio_sink, NULL);
-
-  bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
-  gst_bus_add_watch(bus, gst_bus_callback, pipeline);
-  gst_object_unref(bus);
-
-  gst_element_set_state(GST_ELEMENT(pipeline), GST_STATE_READY);  
-  g_object_set(G_OBJECT(pipeline), "uri", uris[uri], NULL);    
-  gst_element_set_state(GST_ELEMENT(pipeline), GST_STATE_PLAYING);
-  ++count;
-}
-
-gboolean gst_bus_callback(GstBus *bus, GstMessage *message, gpointer data) {
-  if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
-    gst_element_set_state(GST_ELEMENT(data), GST_STATE_NULL);
-    gst_object_unref(GST_ELEMENT(data));
-    --count;
-  }
-  return TRUE;
-}
-
-void* intercept_key_thread(void* data) {
-  XRecordClientSpec rcs;
-  XRecordRange* rr;
-  dpy = XOpenDisplay(0);
-
-  if (!(rr = XRecordAllocRange())) {
-    fprintf(stderr, "XRecordAllocRange error\n");
-    exit(1);
-  }
-  rr->device_events.first = KeyPress;
-  rr->device_events.last = MotionNotify;
-  rcs = XRecordAllClients;
-
-  if (!(rc = XRecordCreateContext(dpy, 0, &rcs, 1, &rr, 1))) {
-    fprintf(stderr, "XRecordCreateContext error\n");
-    exit(1);
-  }
-  XFree(rr);
-  if (!XRecordEnableContext(dpy, rc, key_pressed_cb, data)) {
-    fprintf(stderr, "XRecordEnableContext error\n");
-    exit(1);
-  }
-  return 0;
-}
-
-void stop_intercept_key_thread(void) {
-  void* result;
-  stop_thread = TRUE;
-  if (0 != pthread_join(thread, &result)) {
-    fprintf(stderr, "pthread_join error\n");
-    exit(1);
-  }
-}
-
-void key_pressed_cb(XPointer arg, XRecordInterceptData *d) {
-  if (stop_thread) {
-    if (!XRecordDisableContext(dpy, rc)) {
-      fprintf(stderr, "XRecordDisableContext error\n");
-      exit(1);
+    for (guint i = 0; directories[i] != NULL; i++) {
+        path = g_build_filename(directories[i], name, NULL);
+        if (g_file_test(path, G_FILE_TEST_IS_REGULAR))
+            return path;
+        g_free(path);
     }
-    if (!XRecordFreeContext(dpy, rc)) {
-      fprintf(stderr, "XRecordFreeContext error\n");
-      exit(1);
-    }
-    pthread_exit(0);
-  }
 
-  if (d->category != XRecordFromServer) return;
-  unsigned char type = ((unsigned char*)d->data)[0] & 0x7F;
-  unsigned char detail = ((unsigned char*)d->data)[1];
-  if (type == KeyPress) {
-    switch (detail) {
-      case 36:
-        uri = 1;
-        break;
-      case 65:
-        uri = 2;
-        break;
-      case 22:
-        uri = 3;
-        break;
-      default:
-        uri = 0;
+    g_warning("Sound file '%s' was not found (checked install and local data directories).",
+              name);
+    return NULL;
+}
+
+static void show_error(const gchar *title, const gchar *message)
+{
+    GtkWidget *dialog = gtk_message_dialog_new(
+        NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+        "%s", title);
+    gtk_message_dialog_format_secondary_text(
+        GTK_MESSAGE_DIALOG(dialog), "%s", message);
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+static gboolean show_error_idle(gpointer data)
+{
+    gchar *message = data;
+    show_error("Keyboard device unavailable", message);
+    g_free(message);
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean on_gst_message(GstBus *bus, GstMessage *message, gpointer data)
+{
+    GstElement *player = GST_ELEMENT(data);
+    (void)bus;
+
+    switch (GST_MESSAGE_TYPE(message)) {
+    case GST_MESSAGE_EOS:
+    case GST_MESSAGE_ERROR:
+        if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+            GError *error = NULL;
+            gchar *debug = NULL;
+            gst_message_parse_error(message, &error, &debug);
+            g_warning("Audio playback failed: %s", error->message);
+            g_clear_error(&error);
+            g_free(debug);
+        }
+        gst_element_set_state(player, GST_STATE_NULL);
+        gst_object_unref(player);
+        return G_SOURCE_REMOVE;
+    default:
+        return G_SOURCE_CONTINUE;
     }
-    g_signal_emit_by_name(arg, "activate");
-  }
+}
+
+static gboolean play_sound(gpointer data)
+{
+    const guint sound_index = GPOINTER_TO_UINT(data);
+    gchar *filename;
+    gchar *uri;
+    GError *error = NULL;
+    GstElement *player;
+    GstElement *audio_sink;
+    GstBus *bus;
+
+    if (sound_index >= G_N_ELEMENTS(sound_names))
+        return G_SOURCE_REMOVE;
+
+    filename = find_sound_file(sound_names[sound_index]);
+    if (filename == NULL)
+        return G_SOURCE_REMOVE;
+
+    uri = gst_filename_to_uri(filename, &error);
+    g_free(filename);
+    if (uri == NULL) {
+        g_warning("Cannot create sound URI: %s",
+                  error ? error->message : "unknown error");
+        g_clear_error(&error);
+        return G_SOURCE_REMOVE;
+    }
+
+    player = gst_element_factory_make("playbin", NULL);
+    audio_sink = gst_element_factory_make("autoaudiosink", "audio-sink");
+    if (player == NULL || audio_sink == NULL) {
+        g_warning("GStreamer playbin or autoaudiosink plugin is unavailable");
+        if (player != NULL)
+            gst_object_unref(player);
+        if (audio_sink != NULL)
+            gst_object_unref(audio_sink);
+        g_free(uri);
+        return G_SOURCE_REMOVE;
+    }
+
+    /* Match the original Qwertickle playback setup. */
+    g_object_set(player, "audio-sink", audio_sink, NULL);
+    gst_element_set_state(player, GST_STATE_READY);
+    g_object_set(player, "uri", uri, NULL);
+    g_free(uri);
+
+    bus = gst_element_get_bus(player);
+    gst_bus_add_watch(bus, on_gst_message, player);
+    gst_object_unref(bus);
+
+    if (gst_element_set_state(player, GST_STATE_PLAYING) ==
+        GST_STATE_CHANGE_FAILURE) {
+        g_warning("Could not start audio playback");
+        gst_element_set_state(player, GST_STATE_NULL);
+        gst_object_unref(player);
+    }
+
+    return G_SOURCE_REMOVE;
+}
+
+static guint sound_for_key(unsigned int code)
+{
+    switch (code) {
+    case KEY_ENTER:
+    case KEY_KPENTER:
+        return SOUND_SPECIAL;
+    default:
+        return SOUND_KEY;
+    }
+}
+
+static gpointer input_worker(gpointer unused)
+{
+    struct input_event event;
+    struct pollfd descriptor;
+    gchar name[256] = "unknown input device";
+    unsigned long key_bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 1] = {0};
+    int fd;
+    ssize_t bytes;
+    (void)unused;
+
+    fd = open(device_path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) {
+        gchar *message = g_strdup_printf(
+            "Could not open %s: %s\n\nCheck that your user has permission "
+            "to read this keyboard device.", device_path, g_strerror(errno));
+        g_main_context_invoke(NULL, show_error_idle, message);
+        while (!g_atomic_int_get(&stop_requested))
+            g_usleep(100000);
+        return NULL;
+    }
+
+    if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0)
+        g_strlcpy(name, device_path, sizeof(name));
+
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) < 0 ||
+        !(key_bits[KEY_A / (8 * sizeof(unsigned long))] &
+          (1UL << (KEY_A % (8 * sizeof(unsigned long))))) ||
+        !(key_bits[KEY_SPACE / (8 * sizeof(unsigned long))] &
+          (1UL << (KEY_SPACE % (8 * sizeof(unsigned long))))) ||
+        !(key_bits[KEY_ENTER / (8 * sizeof(unsigned long))] &
+          (1UL << (KEY_ENTER % (8 * sizeof(unsigned long)))))) {
+        gchar *message = g_strdup_printf(
+            "%s does not appear to be a full keyboard. Select the event "
+            "device that provides your normal typing keys.", device_path);
+        close(fd);
+        g_main_context_invoke(NULL, show_error_idle, message);
+        while (!g_atomic_int_get(&stop_requested))
+            g_usleep(100000);
+        return NULL;
+    }
+
+    g_message("Listening to keyboard: %s", name);
+
+    descriptor.fd = fd;
+    descriptor.events = POLLIN;
+    descriptor.revents = 0;
+
+    while (!g_atomic_int_get(&stop_requested)) {
+        int ready = poll(&descriptor, 1, 250);
+
+        if (ready < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (ready == 0)
+            continue;
+        if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))
+            break;
+
+        bytes = read(fd, &event, sizeof(event));
+        if (bytes == (ssize_t)sizeof(event) &&
+            event.type == EV_KEY && event.value == 1) {
+            guint sound_index = sound_for_key(event.code);
+            g_main_context_invoke(NULL, play_sound,
+                                  GUINT_TO_POINTER(sound_index));
+        }
+    }
+
+    close(fd);
+    return NULL;
+}
+
+static void start_listener(void)
+{
+    if (device_path == NULL || input_thread != NULL)
+        return;
+
+    g_atomic_int_set(&stop_requested, 0);
+    input_thread = g_thread_new("qwertickle-input", input_worker, NULL);
+}
+
+static void stop_listener(void)
+{
+    if (input_thread == NULL)
+        return;
+
+    g_atomic_int_set(&stop_requested, 1);
+    g_thread_join(input_thread);
+    input_thread = NULL;
+}
+
+static void on_enable_toggled(GtkCheckMenuItem *item, gpointer data)
+{
+    (void)data;
+    if (gtk_check_menu_item_get_active(item))
+        start_listener();
+    else
+        stop_listener();
+}
+
+static void on_choose_device(GtkMenuItem *item, gpointer data)
+{
+    GtkWidget *dialog;
+    (void)item;
+    (void)data;
+
+    dialog = gtk_file_chooser_dialog_new(
+        "Select keyboard input device", NULL, GTK_FILE_CHOOSER_ACTION_OPEN,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Select", GTK_RESPONSE_ACCEPT, NULL);
+    gtk_file_chooser_set_current_folder(
+        GTK_FILE_CHOOSER(dialog), "/dev/input");
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        gchar *selected = gtk_file_chooser_get_filename(
+            GTK_FILE_CHOOSER(dialog));
+        stop_listener();
+        g_free(device_path);
+        device_path = selected;
+        if (gtk_check_menu_item_get_active(
+                GTK_CHECK_MENU_ITEM(enable_item)))
+            start_listener();
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
+static void on_about(GtkMenuItem *item, gpointer data)
+{
+    const gchar *authors[] = {
+        "Wei-Ning Huang (AZ)",
+        "Modernized GTK/GStreamer/Wayland port",
+        NULL
+    };
+    GtkWidget *dialog;
+    (void)item;
+    (void)data;
+
+    dialog = gtk_about_dialog_new();
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "Qwertickle");
+    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), PACKAGE_VERSION);
+    gtk_about_dialog_set_comments(
+        GTK_ABOUT_DIALOG(dialog),
+        "A typewriter sound scheme for your keyboard.");
+    gtk_about_dialog_set_license_type(
+        GTK_ABOUT_DIALOG(dialog), GTK_LICENSE_GPL_2_0);
+    gtk_about_dialog_set_authors(GTK_ABOUT_DIALOG(dialog), authors);
+    gtk_about_dialog_set_website(
+        GTK_ABOUT_DIALOG(dialog), "https://github.com/Aitjcize/Qwertickle");
+    gtk_window_set_icon_from_file(
+        GTK_WINDOW(dialog), DATADIR "/qwertickle.png", NULL);
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+static void on_quit(GtkMenuItem *item, gpointer data)
+{
+    (void)item;
+    (void)data;
+    stop_listener();
+    gtk_main_quit();
+}
+
+static gboolean is_full_keyboard(const gchar *path)
+{
+    unsigned long key_bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 1] = {0};
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    gboolean valid = FALSE;
+
+    if (fd < 0)
+        return FALSE;
+
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) >= 0 &&
+        (key_bits[KEY_A / (8 * sizeof(unsigned long))] &
+         (1UL << (KEY_A % (8 * sizeof(unsigned long))))) &&
+        (key_bits[KEY_SPACE / (8 * sizeof(unsigned long))] &
+         (1UL << (KEY_SPACE % (8 * sizeof(unsigned long))))) &&
+        (key_bits[KEY_ENTER / (8 * sizeof(unsigned long))] &
+         (1UL << (KEY_ENTER % (8 * sizeof(unsigned long))))))
+        valid = TRUE;
+
+    close(fd);
+    return valid;
+}
+
+static gchar *find_keyboard_device(void)
+{
+    GDir *directory = g_dir_open("/dev/input", 0, NULL);
+    const gchar *name;
+    gchar *found = NULL;
+
+    if (directory == NULL)
+        return NULL;
+
+    while ((name = g_dir_read_name(directory)) != NULL) {
+        gchar *path;
+
+        if (!g_str_has_prefix(name, "event"))
+            continue;
+
+        path = g_build_filename("/dev/input", name, NULL);
+        if (is_full_keyboard(path)) {
+            found = path;
+            break;
+        }
+        g_free(path);
+    }
+
+    g_dir_close(directory);
+    return found;
+}
+
+static gboolean prompt_for_device(gpointer data)
+{
+    gchar *detected = find_keyboard_device();
+    (void)data;
+
+    if (detected != NULL) {
+        g_free(device_path);
+        device_path = detected;
+        g_message("Automatically selected keyboard: %s", device_path);
+        start_listener();
+    } else {
+        GtkWidget *dialog = gtk_message_dialog_new(
+            NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+            "No keyboard could be detected automatically.");
+        gtk_message_dialog_format_secondary_text(
+            GTK_MESSAGE_DIALOG(dialog),
+            "You can select your keyboard manually from the Qwertickle menu.");
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+        on_choose_device(NULL, NULL);
+    }
+
+    return G_SOURCE_REMOVE;
+}
+
+int main(int argc, char **argv)
+{
+    GtkWidget *menu;
+    GtkWidget *choose_item;
+    GtkWidget *about_item;
+    GtkWidget *separator;
+    GtkWidget *quit_item;
+
+    gtk_init(&argc, &argv);
+    gst_init(&argc, &argv);
+
+    indicator = app_indicator_new(
+        "qwertickle", "input-keyboard",
+        APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+    app_indicator_set_icon_full(
+        indicator, DATADIR "/qwertickle.png", "Qwertickle");
+
+    menu = gtk_menu_new();
+    enable_item = gtk_check_menu_item_new_with_label("Enabled");
+    choose_item = gtk_menu_item_new_with_label("Select keyboard…");
+    about_item = gtk_menu_item_new_with_label("About Qwertickle");
+    separator = gtk_separator_menu_item_new();
+    quit_item = gtk_menu_item_new_with_label("Quit");
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), enable_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), choose_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), about_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), separator);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit_item);
+
+    g_signal_connect(enable_item, "toggled",
+                     G_CALLBACK(on_enable_toggled), NULL);
+    g_signal_connect(choose_item, "activate",
+                     G_CALLBACK(on_choose_device), NULL);
+    g_signal_connect(about_item, "activate", G_CALLBACK(on_about), NULL);
+    g_signal_connect(quit_item, "activate", G_CALLBACK(on_quit), NULL);
+
+    gtk_check_menu_item_set_active(
+        GTK_CHECK_MENU_ITEM(enable_item), TRUE);
+    gtk_widget_show_all(menu);
+    app_indicator_set_menu(indicator, GTK_MENU(menu));
+
+    g_idle_add(prompt_for_device, NULL);
+    gtk_main();
+
+    stop_listener();
+    g_clear_pointer(&device_path, g_free);
+    g_object_unref(indicator);
+    return 0;
 }

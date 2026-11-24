@@ -8,10 +8,8 @@ imagesdir = $(datadir)/$(PACKAGE)
 images_DATA = $(PACKAGE).png
 
 soundsdir = $(datadir)/$(PACKAGE)
-sounds_DATA = typewriter-backspace.mp3 \
-	      typewriter-key.mp3 \
-	      typewriter-return.mp3 \
-	      typewriter-space-bar.mp3
+sounds_DATA = embedded-audio-1-ulaw-44100.wav \
+	      embedded-audio-2-pcm-22050.wav
 
 EXTRA_DIST = $(PACKAGE).desktop.in \
 	     $(pixmaps_DATA) \
